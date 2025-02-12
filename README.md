@@ -8,7 +8,7 @@ This linter detects direct comparisons between basic pointer types (like *int, *
 go run main.go ./example
 ```
 
-## Why
+## Why use this linter?
 
 This linter helps prevent subtle bugs by detecting direct comparisons between basic pointer types (like *int, *string, etc.). Such comparisons check if two pointers reference the exact same memory address rather than comparing the underlying values, which is rarely the intended behavior in application code.
 
