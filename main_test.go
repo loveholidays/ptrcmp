@@ -29,8 +29,8 @@ import (
 func TestPointerComparisonFinderWorking(t *testing.T) {
 	fset := token.NewFileSet()
 	pathWithPointer := "./tests/with_pointer_comparison.go"
-	finder := NewPointerComparisonFinder(fset)
-	file, err := parser.ParseFile(fset, pathWithPointer, nil, parser.ParseComments)
+	finder := NewPtrAnalyzer()
+	file, err := parseDir()
 	assert.Nil(t, err)
 	err = finder.checkFile(pathWithPointer, file)
 	assert.Nil(t, err)

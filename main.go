@@ -21,193 +21,174 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/importer"
-	"go/parser"
 	"go/token"
 	"go/types"
+	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/analysis/passes/inspect"
+	"golang.org/x/tools/go/ast/inspector"
 	"golang.org/x/tools/go/packages"
 	"log"
 	"os"
-	"path/filepath"
-	"strings"
 )
 
-type PointerComparisonFinder struct {
-	fset        *token.FileSet
-	issues      []Issue
-	info        *types.Info
-	conf        types.Config
-	typesByName map[string]types.Object
+func main() {
+	if len(os.Args) != 2 {
+		log.Fatal("Usage: ptrcmp <directory>")
+	}
+	dir := os.Args[1]
+
+	parseDir(dir)
 }
 
-type Issue struct {
-	pos     token.Position
-	message string
-}
+func parseDir(dir string) {
+	// Configure the packages.Load to load the packages in the directory
+	cfg := &packages.Config{
+		Mode: packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps,
+		Dir:  dir,
+	}
 
-func NewPointerComparisonFinder(fset *token.FileSet) *PointerComparisonFinder {
-	return &PointerComparisonFinder{
-		fset:   fset,
-		issues: make([]Issue, 0),
-		info: &types.Info{
-			Types:      make(map[ast.Expr]types.TypeAndValue),
-			Defs:       make(map[*ast.Ident]types.Object),
-			Uses:       make(map[*ast.Ident]types.Object),
-			Selections: make(map[*ast.SelectorExpr]*types.Selection),
-		},
-		conf: types.Config{
-			Importer: importer.Default(),
-			Error: func(err error) {
-				log.Printf("DEBUG: Type checker error: %v", err)
+	// Load the packages in the directory
+	pkgs, err := packages.Load(cfg, "./...")
+	if err != nil {
+		log.Fatalf("Failed to load packages: %v", err)
+	}
+
+	// Check for any packages with errors
+	var errs []error
+	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
+		for _, err := range pkg.Errors {
+			errs = append(errs, err)
+		}
+	})
+	if len(errs) > 0 {
+		log.Println("Packages contain errors:")
+		for _, err := range errs {
+			log.Println(err)
+		}
+	}
+	// Create analyzer
+	ptrAnalyzer := NewPtrAnalyzer()
+
+	// Run the analyzer on each package
+	for _, pkg := range pkgs {
+		pass := &analysis.Pass{
+			Analyzer:   ptrAnalyzer,
+			Fset:       pkg.Fset,
+			Files:      pkg.Syntax,
+			OtherFiles: nil,
+			Pkg:        pkg.Types,
+			TypesInfo:  pkg.TypesInfo,
+			TypesSizes: pkg.TypesSizes,
+			ResultOf:   make(map[*analysis.Analyzer]interface{}),
+			Report: func(d analysis.Diagnostic) {
+				pos := pkg.Fset.Position(d.Pos)
+				fmt.Printf("%s:%d:%d: %s\n", pos.Filename, pos.Line, pos.Column, d.Message)
 			},
-		},
+		}
+
+		// Run the inspect pass first to populate the ResultOf map
+		inspectPass := &analysis.Pass{
+			Analyzer:   inspect.Analyzer,
+			Fset:       pkg.Fset,
+			Files:      pkg.Syntax,
+			OtherFiles: nil,
+			Pkg:        pkg.Types,
+			TypesInfo:  pkg.TypesInfo,
+			TypesSizes: pkg.TypesSizes,
+			ResultOf:   make(map[*analysis.Analyzer]interface{}),
+			Report:     func(d analysis.Diagnostic) {},
+		}
+		result, err := inspect.Analyzer.Run(inspectPass)
+		if err != nil {
+			log.Printf("Failed to run inspect analyzer on package %s: %v\n", pkg.Name, err)
+			continue
+		}
+		pass.ResultOf[inspect.Analyzer] = result
+		// Run our analyzer
+		_, err = ptrAnalyzer.Run(pass)
+		if err != nil {
+			log.Printf("Failed to run analyzer on package %s: %v\n", pkg.Name, err)
+		}
 	}
 }
 
-func (v *PointerComparisonFinder) Visit(node ast.Node) ast.Visitor {
+func NewPtrAnalyzer() *analysis.Analyzer {
+	return &analysis.Analyzer{
+		Name:     "ptrcmp",
+		Doc:      "checks that there are no pointer comparisons between basic types",
+		Requires: []*analysis.Analyzer{inspect.Analyzer},
+		Run:      run,
+	}
+}
+
+func run(pass *analysis.Pass) (any, error) {
+	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+
+	nodeFilter := []ast.Node{
+		(*ast.BinaryExpr)(nil), // Add BinaryExpr to filter to inspect binary expressions
+	}
+
+	inspect.Preorder(nodeFilter, func(n ast.Node) {
+		Visit(pass, n)
+	})
+	return nil, nil
+}
+
+func Visit(pass *analysis.Pass, node ast.Node) {
 	if node == nil {
-		return nil
+		return
 	}
 
 	if binaryExpr, ok := node.(*ast.BinaryExpr); ok {
 		switch binaryExpr.Op {
 		case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
-			if v.isPointerType(binaryExpr.X) && v.isPointerType(binaryExpr.Y) {
-				leftType := v.getUnderlyingType(binaryExpr.X)
-				rightType := v.getUnderlyingType(binaryExpr.Y)
-				if !isBasicType(leftType) && !isBasicType(rightType) {
-					return v
+			if isPointerType(pass, binaryExpr.X) && isPointerType(pass, binaryExpr.Y) {
+				leftType := getUnderlyingType(pass, binaryExpr.X)
+				rightType := getUnderlyingType(pass, binaryExpr.Y)
+				if isBasicType2(leftType) && isBasicType2(rightType) { // Fixed logic: we want to report when BOTH are basic types
+					pass.Report(
+						analysis.Diagnostic{
+							Pos:     binaryExpr.Pos(), // Fixed: use position of binary expression
+							Message: fmt.Sprintf("comparing pointers to basic types: %v and %v", leftType, rightType),
+						},
+					)
 				}
-
-				pos := v.fset.Position(binaryExpr.Pos())
-				v.issues = append(v.issues, Issue{
-					pos:     pos,
-					message: "Direct pointer comparison found. Consider comparing the dereferenced values instead.",
-				})
 			}
 		default:
 		}
 	}
-	return v
 }
 
-func (v *PointerComparisonFinder) getUnderlyingType(expr ast.Expr) types.Type {
-	if ident, ok := expr.(*ast.Ident); ok {
-		if obj := v.typesByName[ident.Name]; obj != nil {
-			if ptr, ok := obj.Type().(*types.Pointer); ok {
-				return ptr.Elem()
-			}
-			return obj.Type()
-		}
-	}
-	return nil
-}
-
-func isBasicType(t types.Type) bool {
-	if _, ok := t.(*types.Basic); ok {
-		return true
-	}
-	return false
-}
-
-func (v *PointerComparisonFinder) isPointerType(expr ast.Expr) bool {
-	switch t := expr.(type) {
-	case *ast.StarExpr:
+func isPointerType(pass *analysis.Pass, expr ast.Expr) bool {
+	// Get the actual type from the type checker
+	exprType := pass.TypesInfo.TypeOf(expr)
+	if exprType == nil {
 		return false
-	case *ast.Ident:
-		if t.Obj != nil && t.Obj.Decl != nil {
-			if valueSpec, ok := t.Obj.Decl.(*ast.ValueSpec); ok {
-				if valueSpec.Type != nil {
-					_, isPtr := valueSpec.Type.(*ast.StarExpr)
-					return isPtr
-				}
-			}
-		}
-	case *ast.SelectorExpr:
-		if ident, ok := t.X.(*ast.Ident); ok {
-			return strings.HasSuffix(ident.Name, "Ptr")
-		}
 	}
-	return false
+
+	_, isPtr := exprType.(*types.Pointer)
+	return isPtr
 }
 
-func (v *PointerComparisonFinder) checkFile(filename string, file *ast.File) error {
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes |
-			packages.NeedTypesInfo |
-			packages.NeedSyntax |
-			packages.NeedDeps |
-			packages.NeedImports |
-			packages.NeedFiles,
-		Tests: true,
-		Dir:   filepath.Dir(filename),
-		Fset:  v.fset, // Make sure to use the same fset
-	}
-
-	pkgs, err := packages.Load(cfg, ".")
-	if err != nil {
-		return fmt.Errorf("loading package: %v", err)
-	}
-
-	if len(pkgs) == 0 {
-		return fmt.Errorf("no packages found")
-	}
-
-	if pkgs[0].TypesInfo == nil {
-		return fmt.Errorf("no type information")
-	}
-
-	v.info = pkgs[0].TypesInfo
-	v.typesByName = make(map[string]types.Object)
-
-	for _, obj := range v.info.Uses {
-		v.typesByName[obj.Name()] = obj
-	}
-
-	ast.Walk(v, file)
-	return nil
-}
-
-func main() {
-	if len(os.Args) != 2 {
-		log.Fatal("Usage: ptrcomp <directory>")
-	}
-	dir := os.Args[1]
-
-	fset := token.NewFileSet()
-	finder := NewPointerComparisonFinder(fset)
-
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() && !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			log.Printf("Failed to parse %s: %v\n", path, err)
-			return nil
-		}
-
-		if err := finder.checkFile(path, file); err != nil {
-			log.Printf("Failed to type check %s: %v\n", path, err)
-			return nil
-		}
+func getUnderlyingType(pass *analysis.Pass, expr ast.Expr) types.Type {
+	// Get the type from the type checker
+	exprType := pass.TypesInfo.TypeOf(expr)
+	if exprType == nil {
 		return nil
-	})
-
-	if err != nil {
-		log.Fatalf("Error walking directory: %v", err)
 	}
 
-	for _, issue := range finder.issues {
-		log.Printf("%s:%d: %s\n", issue.pos.Filename, issue.pos.Line, issue.message)
+	// If it's a pointer, get the element type
+	if ptr, ok := exprType.(*types.Pointer); ok {
+		return ptr.Elem()
 	}
+
+	return exprType
+}
+
+func isBasicType2(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, isBasic := t.Underlying().(*types.Basic)
+	return isBasic
 }
