@@ -37,23 +37,26 @@ func main() {
 	}
 	dir := os.Args[1]
 
-	parseDir(dir)
+	results, err := parseDir(dir)
+	if err != nil {
+		log.Fatalf("Error %v", err)
+	}
+	for _, result := range results {
+		println(result)
+	}
 }
 
 func parseDir(dir string) ([]string, error) {
-	// Configure the packages.Load to load the packages in the directory
 	cfg := &packages.Config{
 		Mode: packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps,
 		Dir:  dir,
 	}
 
-	// Load the packages in the directory
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
-		return []string{}, fmt.Errorf("Failed to load packages: %v", err)
+		return []string{}, fmt.Errorf("failed to load packages: %v", err)
 	}
 
-	// Check for any packages with errors
 	var errs []error
 	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
 		for _, err := range pkg.Errors {
@@ -81,7 +84,7 @@ func parseDir(dir string) ([]string, error) {
 			ResultOf:   make(map[*analysis.Analyzer]interface{}),
 			Report: func(d analysis.Diagnostic) {
 				pos := pkg.Fset.Position(d.Pos)
-				results = append(results, fmt.Sprintf("%s:%d:%d: %s\n", pos.Filename, pos.Line, pos.Column, d.Message))
+				results = append(results, fmt.Sprintf("%s:%d:%d: %s", pos.Filename, pos.Line, pos.Column, d.Message))
 			},
 		}
 
@@ -102,7 +105,6 @@ func parseDir(dir string) ([]string, error) {
 			continue
 		}
 		pass.ResultOf[inspect.Analyzer] = result
-		// Run our analyzer
 		_, err = ptrAnalyzer.Run(pass)
 		if err != nil {
 			return []string{}, fmt.Errorf("Failed to run analyzer on package %s: %v\n", pkg.Name, err)
@@ -124,7 +126,7 @@ func run(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
-		(*ast.BinaryExpr)(nil), // Add BinaryExpr to filter to inspect binary expressions
+		(*ast.BinaryExpr)(nil),
 	}
 
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
@@ -138,7 +140,7 @@ func run(pass *analysis.Pass) (any, error) {
 				if isPointerType(pass, binaryExpr.X) && isPointerType(pass, binaryExpr.Y) {
 					leftType := getUnderlyingType(pass, binaryExpr.X)
 					rightType := getUnderlyingType(pass, binaryExpr.Y)
-					if isBasicType(leftType) && isBasicType(rightType) { // Fixed logic: we want to report when BOTH are basic types
+					if isBasicType(leftType) && isBasicType(rightType) {
 						pass.Report(
 							analysis.Diagnostic{
 								Pos:     binaryExpr.Pos(),
@@ -155,7 +157,6 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 func isPointerType(pass *analysis.Pass, expr ast.Expr) bool {
-	// Get the actual type from the type checker
 	exprType := pass.TypesInfo.TypeOf(expr)
 	if exprType == nil {
 		return false
@@ -166,13 +167,11 @@ func isPointerType(pass *analysis.Pass, expr ast.Expr) bool {
 }
 
 func getUnderlyingType(pass *analysis.Pass, expr ast.Expr) types.Type {
-	// Get the type from the type checker
 	exprType := pass.TypesInfo.TypeOf(expr)
 	if exprType == nil {
 		return nil
 	}
 
-	// If it's a pointer, get the element type
 	if ptr, ok := exprType.(*types.Pointer); ok {
 		return ptr.Elem()
 	}
