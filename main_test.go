@@ -20,31 +20,13 @@ package main
 
 import (
 	"github.com/stretchr/testify/assert"
-	"go/parser"
-	"go/token"
 	"strings"
 	"testing"
 )
 
 func TestPointerComparisonFinderWorking(t *testing.T) {
-	fset := token.NewFileSet()
-	pathWithPointer := "./tests/with_pointer_comparison.go"
-	finder := NewPtrAnalyzer()
-	file, err := parseDir()
+	results, err := parseDir("./tests")
 	assert.Nil(t, err)
-	err = finder.checkFile(pathWithPointer, file)
-	assert.Nil(t, err)
-	assert.Len(t, finder.issues, 1)
-	assert.True(t, strings.Contains("tests/with_pointer_comparison.go:7: Direct pointer comparison found. Consider comparing the dereferenced values instead.", finder.issues[0].message))
-}
-
-func TestNoPointerComparisons(t *testing.T) {
-	fset := token.NewFileSet()
-	pathWithPointer := "./tests/without_pointer_comparison.go"
-	finder := NewPointerComparisonFinder(fset)
-	file, err := parser.ParseFile(fset, pathWithPointer, nil, parser.ParseComments)
-	assert.Nil(t, err)
-	err = finder.checkFile(pathWithPointer, file)
-	assert.Nil(t, err)
-	assert.Len(t, finder.issues, 0)
+	assert.Equal(t, len(results), 1)
+	assert.True(t, strings.Contains(results[0], "ptrcmp/tests/with_pointer_comparison.go:25:5: comparing pointers to basic types: int and int\n"))
 }
