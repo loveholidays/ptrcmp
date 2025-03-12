@@ -128,34 +128,30 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
-		Visit(pass, n)
+		if n == nil {
+			return
+		}
+
+		if binaryExpr, ok := n.(*ast.BinaryExpr); ok {
+			switch binaryExpr.Op {
+			case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
+				if isPointerType(pass, binaryExpr.X) && isPointerType(pass, binaryExpr.Y) {
+					leftType := getUnderlyingType(pass, binaryExpr.X)
+					rightType := getUnderlyingType(pass, binaryExpr.Y)
+					if isBasicType(leftType) && isBasicType(rightType) { // Fixed logic: we want to report when BOTH are basic types
+						pass.Report(
+							analysis.Diagnostic{
+								Pos:     binaryExpr.Pos(),
+								Message: fmt.Sprintf("comparing pointers to basic types: %v and %v", leftType, rightType),
+							},
+						)
+					}
+				}
+			default:
+			}
+		}
 	})
 	return nil, nil
-}
-
-func Visit(pass *analysis.Pass, node ast.Node) {
-	if node == nil {
-		return
-	}
-
-	if binaryExpr, ok := node.(*ast.BinaryExpr); ok {
-		switch binaryExpr.Op {
-		case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
-			if isPointerType(pass, binaryExpr.X) && isPointerType(pass, binaryExpr.Y) {
-				leftType := getUnderlyingType(pass, binaryExpr.X)
-				rightType := getUnderlyingType(pass, binaryExpr.Y)
-				if isBasicType(leftType) && isBasicType(rightType) { // Fixed logic: we want to report when BOTH are basic types
-					pass.Report(
-						analysis.Diagnostic{
-							Pos:     binaryExpr.Pos(),
-							Message: fmt.Sprintf("comparing pointers to basic types: %v and %v", leftType, rightType),
-						},
-					)
-				}
-			}
-		default:
-		}
-	}
 }
 
 func isPointerType(pass *analysis.Pass, expr ast.Expr) bool {
