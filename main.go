@@ -125,35 +125,47 @@ func NewPtrAnalyzer() *analysis.Analyzer {
 func run(pass *analysis.Pass) (any, error) {
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	nodeFilter := []ast.Node{
-		(*ast.BinaryExpr)(nil),
-	}
+	nodeFilter := []ast.Node{(*ast.BinaryExpr)(nil)}
 
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
-		if n == nil {
+		binaryExpr, ok := n.(*ast.BinaryExpr)
+		if !ok {
 			return
 		}
 
-		if binaryExpr, ok := n.(*ast.BinaryExpr); ok {
-			switch binaryExpr.Op {
-			case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
-				if isPointerType(pass, binaryExpr.X) && isPointerType(pass, binaryExpr.Y) {
-					leftType := getUnderlyingType(pass, binaryExpr.X)
-					rightType := getUnderlyingType(pass, binaryExpr.Y)
-					if isBasicType(leftType) && isBasicType(rightType) {
-						pass.Report(
-							analysis.Diagnostic{
-								Pos:     binaryExpr.Pos(),
-								Message: fmt.Sprintf("comparing pointers to basic types: %v and %v", leftType, rightType),
-							},
-						)
-					}
-				}
-			default:
-			}
+		if isComparisonOperator(binaryExpr.Op) {
+			checkPointerComparison(pass, binaryExpr)
 		}
 	})
+
 	return nil, nil
+}
+
+// isComparisonOperator checks if the token is a comparison operator
+func isComparisonOperator(op token.Token) bool {
+	switch op {
+	case token.EQL, token.NEQ, token.LSS, token.GTR, token.LEQ, token.GEQ:
+		return true
+	default:
+		return false
+	}
+}
+
+// checkPointerComparison checks if both operands are pointers to basic types
+func checkPointerComparison(pass *analysis.Pass, binaryExpr *ast.BinaryExpr) {
+	if !isPointerType(pass, binaryExpr.X) || !isPointerType(pass, binaryExpr.Y) {
+		return
+	}
+
+	leftType := getUnderlyingType(pass, binaryExpr.X)
+	rightType := getUnderlyingType(pass, binaryExpr.Y)
+
+	if isBasicType(leftType) && isBasicType(rightType) {
+		pass.Report(analysis.Diagnostic{
+			Pos:     binaryExpr.Pos(),
+			Message: fmt.Sprintf("comparing pointers to basic types: %v and %v", leftType, rightType),
+		})
+	}
 }
 
 func isPointerType(pass *analysis.Pass, expr ast.Expr) bool {
