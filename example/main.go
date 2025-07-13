@@ -18,10 +18,7 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 package example
 
-func exampleComparison() {
-	var one *int
-	var two *int
-
+func compareTwoPointers(one, two *int) {
 	if one == two {
 		// linter should highlight as comparisons between two "basic" ptrs i.e *int == *int
 	}
