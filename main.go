@@ -1,21 +1,3 @@
-/*
-ptrcmp
-Copyright (C) 2025  loveholidays
-
-This program is free software; you can redistribute it and/or
-modify it under the terms of the GNU Lesser General Public
-License as published by the Free Software Foundation; either
-version 3 of the License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-Lesser General Public License for more details.
-
-You should have received a copy of the GNU Lesser General Public License
-along with this program; if not, write to the Free Software Foundation,
-Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-*/
 package main
 
 import (
@@ -23,12 +5,13 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"log"
+	"os"
+
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
 	"golang.org/x/tools/go/packages"
-	"log"
-	"os"
 )
 
 func main() {
@@ -69,48 +52,67 @@ func parseDir(dir string) ([]string, error) {
 			log.Println(err)
 		}
 	}
+
 	ptrAnalyzer := NewPtrAnalyzer()
-
 	results := make([]string, 0)
-	for _, pkg := range pkgs {
-		pass := &analysis.Pass{
-			Analyzer:   ptrAnalyzer,
-			Fset:       pkg.Fset,
-			Files:      pkg.Syntax,
-			OtherFiles: nil,
-			Pkg:        pkg.Types,
-			TypesInfo:  pkg.TypesInfo,
-			TypesSizes: pkg.TypesSizes,
-			ResultOf:   make(map[*analysis.Analyzer]interface{}),
-			Report: func(d analysis.Diagnostic) {
-				pos := pkg.Fset.Position(d.Pos)
-				results = append(results, fmt.Sprintf("%s:%d:%d: %s", pos.Filename, pos.Line, pos.Column, d.Message))
-			},
-		}
 
-		inspectPass := &analysis.Pass{
-			Analyzer:   inspect.Analyzer,
-			Fset:       pkg.Fset,
-			Files:      pkg.Syntax,
-			OtherFiles: nil,
-			Pkg:        pkg.Types,
-			TypesInfo:  pkg.TypesInfo,
-			TypesSizes: pkg.TypesSizes,
-			ResultOf:   make(map[*analysis.Analyzer]interface{}),
-			Report:     func(d analysis.Diagnostic) {},
-		}
-		result, err := inspect.Analyzer.Run(inspectPass)
+	for _, pkg := range pkgs {
+		diagnostics, err := runAnalyzer(ptrAnalyzer, pkg)
 		if err != nil {
-			log.Printf("Failed to run inspect analyzer on package %s: %v\n", pkg.Name, err)
-			continue
+			return []string{}, fmt.Errorf("failed to run analyzer on package %s: %v", pkg.Name, err)
 		}
-		pass.ResultOf[inspect.Analyzer] = result
-		_, err = ptrAnalyzer.Run(pass)
-		if err != nil {
-			return []string{}, fmt.Errorf("Failed to run analyzer on package %s: %v\n", pkg.Name, err)
+		for _, diag := range diagnostics {
+			pos := pkg.Fset.Position(diag.Pos)
+			results = append(results, fmt.Sprintf("%s:%d:%d: %s", pos.Filename, pos.Line, pos.Column, diag.Message))
 		}
 	}
 	return results, nil
+}
+
+func runAnalyzer(analyzer *analysis.Analyzer, pkg *packages.Package) ([]analysis.Diagnostic, error) {
+	var diagnostics []analysis.Diagnostic
+
+	resultOf := make(map[*analysis.Analyzer]interface{})
+	for _, dep := range analyzer.Requires {
+		pass := &analysis.Pass{
+			Analyzer:   dep,
+			Fset:       pkg.Fset,
+			Files:      pkg.Syntax,
+			OtherFiles: nil,
+			Pkg:        pkg.Types,
+			TypesInfo:  pkg.TypesInfo,
+			TypesSizes: pkg.TypesSizes,
+			ResultOf:   resultOf,
+			Report:     func(d analysis.Diagnostic) {},
+		}
+
+		result, err := dep.Run(pass)
+		if err != nil {
+			return nil, fmt.Errorf("failed to run dependency %s: %v", dep.Name, err)
+		}
+		resultOf[dep] = result
+	}
+
+	pass := &analysis.Pass{
+		Analyzer:   analyzer,
+		Fset:       pkg.Fset,
+		Files:      pkg.Syntax,
+		OtherFiles: nil,
+		Pkg:        pkg.Types,
+		TypesInfo:  pkg.TypesInfo,
+		TypesSizes: pkg.TypesSizes,
+		ResultOf:   resultOf,
+		Report: func(d analysis.Diagnostic) {
+			diagnostics = append(diagnostics, d)
+		},
+	}
+
+	_, err := analyzer.Run(pass)
+	if err != nil {
+		return nil, err
+	}
+
+	return diagnostics, nil
 }
 
 func NewPtrAnalyzer() *analysis.Analyzer {
