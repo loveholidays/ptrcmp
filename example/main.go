@@ -18,12 +18,26 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 package example
 
-func compareTwoPointers(one, two *int) {
+func examplePtr() {
+	one := 1
+	two := 2
+	comparePointers(&one, &two)
+}
+
+func comparePointers(one, two *int) {
 	if one == two {
-		// linter should highlight as comparisons between two "basic" ptrs i.e *int == *int
+		doSomething()
+	}
+
+	if one == nil || two == nil {
+		return
 	}
 
 	if *one == *two {
-		// linter should ignore as its int == int
+		doSomethingElse()
 	}
 }
+
+func doSomething() {}
+
+func doSomethingElse() {}

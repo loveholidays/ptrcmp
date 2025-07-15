@@ -5,13 +5,12 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"log"
-	"os"
-
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
 	"golang.org/x/tools/go/packages"
+	"log"
+	"os"
 )
 
 func main() {
